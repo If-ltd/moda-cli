@@ -26,6 +26,8 @@ moda-cli call <tool-name> --mode client --input '{}'
 
 The command discovers the running desktop client, connects to its loopback HTTPS Streamable HTTP MCP endpoint, and exposes the tools from that endpoint over stdio MCP. Authentication, organization selection, backend access, confirmation UI, and renderer capabilities remain owned by the desktop client. `moda-cli` does not contain a Moda tool catalog and does not receive backend login credentials.
 
+Long-running stdio bridges securely reread the selected descriptor before each request so Electron can rotate its endpoint-scoped token. A refreshed descriptor is accepted only while it still identifies the same Electron process, endpoint, and root CA. If Electron restarts or the connection identity changes, the bridge fails explicitly and must be restarted.
+
 Use `--connection-file FILE` for development instances or another non-default descriptor. The flag takes precedence over `MODA_CLIENT_MCP_CONNECTION_FILE`; neither source silently falls back when the selected file is invalid.
 
 Default descriptor paths are:
@@ -62,13 +64,14 @@ The local access token is only for the Electron loopback endpoint. The descripto
 
 ### Electron publisher contract
 
-The current TypeScript publisher is transitional and must be updated in `moda-studio` before this Go client can connect to a released desktop build. The required private-repository changes are deliberately limited to the protocol boundary:
+The Electron publisher and Go reader share these protocol requirements:
 
-1. Change the descriptor writer to emit `protocolVersion`, `transport`, `expiresAt`, and nested `client.pid/client.startedAt` using the v1 shape above; remove the transitional top-level `version` and `processId` fields.
-2. Refresh the descriptor and process-local token before expiry, continue using atomic replacement, and keep Unix mode `0600` (or a current-user-only Windows ACL).
-3. Keep the endpoint at `/agent-runtime/v1/mcp/client`, loopback-only HTTPS, POST-compatible Streamable HTTP, and require `Authorization: Bearer <localAccessToken>`.
-4. Continue deriving tools and calls from the existing Electron capability gateway and renderer implementations. Do not add a second 3D implementation or a Go-side business tool catalog.
-5. Remove the transitional TypeScript `packages/client-cli` only after released Electron builds and this Go CLI have reached capability parity.
+1. Emit `protocolVersion`, `transport`, `expiresAt`, and nested `client.pid/client.startedAt` using the v1 shape above. Transitional top-level `version` and `processId` fields are not accepted.
+2. Activate each new endpoint-scoped token before atomically replacing the descriptor. Keep earlier published tokens valid until their own descriptor expiry so another process can observe only an old-valid or new-valid connection pair.
+3. Refresh the descriptor before expiry and keep Unix mode `0600` (or a current-user-only Windows ACL). A publication failure must leave the previous descriptor and token usable until their declared expiry.
+4. Keep the endpoint at `/agent-runtime/v1/mcp/client`, loopback-only HTTPS, POST-compatible Streamable HTTP, and require `Authorization: Bearer <localAccessToken>`. Descriptor tokens must not authorize any other Agent Runtime path.
+5. Continue deriving tools and calls from the existing Electron capability gateway and renderer implementations. Do not add a second 3D implementation or a Go-side business tool catalog.
+6. Remove the transitional TypeScript `packages/client-cli` only after direct mode has a separately agreed architecture and both modes have reached capability parity.
 
 ## Direct mode
 

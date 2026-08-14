@@ -87,14 +87,8 @@ func main() {
 		exitWithError("moda_cli_failed", err, 1)
 		return
 	}
-	descriptor, err := clientconn.Read(connectionFile)
-	if err != nil {
-		exitWithError("moda_cli_failed", err, 1)
-		return
-	}
-
 	if command.Name == "tools" || command.Name == "call" {
-		client, err := clientmcp.ConnectDesktop(ctx, descriptor)
+		client, err := clientmcp.ConnectDesktopFile(ctx, connectionFile)
 		if err != nil {
 			exitWithError("moda_cli_failed", err, 1)
 			return
@@ -119,7 +113,7 @@ func main() {
 		}
 		return
 	}
-	if err := clientmcp.RunBridge(ctx, descriptor, &mcp.StdioTransport{}); err != nil {
+	if err := clientmcp.RunBridgeFile(ctx, connectionFile, &mcp.StdioTransport{}); err != nil {
 		exitWithError("moda_cli_failed", err, 1)
 	}
 }

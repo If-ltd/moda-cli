@@ -15,8 +15,17 @@ import (
 
 func RunBridge(ctx context.Context, descriptor clientconn.Descriptor, agentTransport mcp.Transport) error {
 	client, err := ConnectDesktop(ctx, descriptor)
-	if err != nil {
-		return err
+	return runBridge(ctx, client, err, agentTransport)
+}
+
+func RunBridgeFile(ctx context.Context, descriptorPath string, agentTransport mcp.Transport) error {
+	client, err := ConnectDesktopFile(ctx, descriptorPath)
+	return runBridge(ctx, client, err, agentTransport)
+}
+
+func runBridge(ctx context.Context, client *DesktopClient, connectErr error, agentTransport mcp.Transport) error {
+	if connectErr != nil {
+		return connectErr
 	}
 	defer client.Close()
 
@@ -56,7 +65,21 @@ type DesktopClient struct {
 }
 
 func ConnectDesktop(ctx context.Context, descriptor clientconn.Descriptor) (*DesktopClient, error) {
-	session, closeHTTP, err := connectDesktop(ctx, descriptor)
+	session, closeHTTP, err := connectDesktopWithSource(ctx, descriptor, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &DesktopClient{session: session, closeHTTP: closeHTTP}, nil
+}
+
+func ConnectDesktopFile(ctx context.Context, descriptorPath string) (*DesktopClient, error) {
+	descriptor, err := clientconn.Read(descriptorPath)
+	if err != nil {
+		return nil, err
+	}
+	session, closeHTTP, err := connectDesktopWithSource(ctx, descriptor, func() (clientconn.Descriptor, error) {
+		return clientconn.Read(descriptorPath)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +109,16 @@ func (client *DesktopClient) Close() error {
 }
 
 func connectDesktop(ctx context.Context, descriptor clientconn.Descriptor) (*mcp.ClientSession, func(), error) {
+	return connectDesktopWithSource(ctx, descriptor, nil)
+}
+
+type descriptorSource func() (clientconn.Descriptor, error)
+
+func connectDesktopWithSource(
+	ctx context.Context,
+	descriptor clientconn.Descriptor,
+	source descriptorSource,
+) (*mcp.ClientSession, func(), error) {
 	certificateData, err := os.ReadFile(descriptor.RootCAPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read Moda desktop root CA %q: %w", descriptor.RootCAPath, err)
@@ -106,8 +139,9 @@ func connectDesktop(ctx context.Context, descriptor clientconn.Descriptor) (*mcp
 	}
 	httpClient := &http.Client{
 		Transport: &authorizationTransport{
-			token: descriptor.LocalAccessToken,
-			base:  httpTransport,
+			initial: descriptor,
+			source:  source,
+			base:    httpTransport,
 		},
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return errors.New("Moda desktop MCP endpoint must not redirect")
@@ -150,13 +184,32 @@ func listAllTools(ctx context.Context, session *mcp.ClientSession) ([]*mcp.Tool,
 }
 
 type authorizationTransport struct {
-	token string
-	base  http.RoundTripper
+	initial clientconn.Descriptor
+	source  descriptorSource
+	base    http.RoundTripper
 }
 
 func (transport *authorizationTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	descriptor := transport.initial
+	if transport.source != nil {
+		latest, err := transport.source()
+		if err != nil {
+			return nil, fmt.Errorf("refresh Moda desktop connection descriptor: %w", err)
+		}
+		if !sameDesktopConnection(transport.initial, latest) {
+			return nil, errors.New("Moda desktop client changed; restart the client MCP bridge")
+		}
+		descriptor = latest
+	}
 	requestCopy := request.Clone(request.Context())
 	requestCopy.Header = request.Header.Clone()
-	requestCopy.Header.Set("Authorization", "Bearer "+transport.token)
+	requestCopy.Header.Set("Authorization", "Bearer "+descriptor.LocalAccessToken)
 	return transport.base.RoundTrip(requestCopy)
+}
+
+func sameDesktopConnection(initial, latest clientconn.Descriptor) bool {
+	return initial.Endpoint == latest.Endpoint &&
+		initial.RootCAPath == latest.RootCAPath &&
+		initial.Client.PID == latest.Client.PID &&
+		initial.Client.StartedAt.Equal(latest.Client.StartedAt)
 }

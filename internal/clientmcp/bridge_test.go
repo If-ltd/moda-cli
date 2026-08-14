@@ -167,6 +167,63 @@ func TestConnectDesktopRejectsRedirectWithoutForwardingToken(t *testing.T) {
 	}
 }
 
+func TestConnectDesktopFileReloadsRotatedDescriptorToken(t *testing.T) {
+	var requiredToken atomic.Value
+	requiredToken.Store("token-a")
+	remoteServer := mcp.NewServer(&mcp.Implementation{Name: "rotating-electron", Version: "1.0.0"}, nil)
+	remoteServer.AddTool(&mcp.Tool{
+		Name: "moda_store_list", InputSchema: map[string]any{"type": "object"},
+	}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{StructuredContent: map[string]any{"ok": true}}, nil
+	})
+	streamableHandler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return remoteServer },
+		&mcp.StreamableHTTPOptions{JSONResponse: true},
+	)
+	tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer "+requiredToken.Load().(string) {
+			http.Error(response, "expired client token", http.StatusUnauthorized)
+			return
+		}
+		streamableHandler.ServeHTTP(response, request)
+	}))
+	t.Cleanup(tlsServer.Close)
+
+	descriptorPath := filepath.Join(t.TempDir(), "moda-client-mcp.json")
+	descriptor := clientconn.Descriptor{
+		Protocol:         clientconn.Protocol,
+		ProtocolVersion:  clientconn.ProtocolVersion,
+		Transport:        clientconn.TransportStreamableHTTP,
+		Endpoint:         tlsServer.URL + "/agent-runtime/v1/mcp/client",
+		LocalAccessToken: "token-a",
+		RootCAPath:       writeTestRootCA(t, tlsServer.Certificate()),
+		ExpiresAt:        time.Now().Add(10 * time.Minute),
+		Client: clientconn.ClientProcess{
+			PID:       os.Getpid(),
+			StartedAt: time.Now().Add(-time.Minute),
+		},
+	}
+	writeTestDescriptor(t, descriptorPath, descriptor)
+	client, err := ConnectDesktopFile(context.Background(), descriptorPath)
+	if err != nil {
+		t.Fatalf("ConnectDesktopFile() error = %v", err)
+	}
+	defer client.Close()
+
+	descriptor.LocalAccessToken = "token-b"
+	descriptor.ExpiresAt = time.Now().Add(15 * time.Minute)
+	writeTestDescriptor(t, descriptorPath, descriptor)
+	requiredToken.Store("token-b")
+
+	tools, err := client.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools() after descriptor rotation error = %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "moda_store_list" {
+		t.Fatalf("tools after descriptor rotation = %+v", tools)
+	}
+}
+
 func writeTestRootCA(t *testing.T, certificate *x509.Certificate) string {
 	t.Helper()
 	filePath := filepath.Join(t.TempDir(), "root-ca.pem")
@@ -175,4 +232,15 @@ func writeTestRootCA(t *testing.T, certificate *x509.Certificate) string {
 		t.Fatal(err)
 	}
 	return filePath
+}
+
+func writeTestDescriptor(t *testing.T, filePath string, descriptor clientconn.Descriptor) {
+	t.Helper()
+	data, err := json.Marshal(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filePath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
