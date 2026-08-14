@@ -14,14 +14,13 @@ import (
 )
 
 func RunBridge(ctx context.Context, descriptor clientconn.Descriptor, agentTransport mcp.Transport) error {
-	remoteSession, closeHTTP, err := connectDesktop(ctx, descriptor)
+	client, err := ConnectDesktop(ctx, descriptor)
 	if err != nil {
 		return err
 	}
-	defer closeHTTP()
-	defer remoteSession.Close()
+	defer client.Close()
 
-	tools, err := listAllTools(ctx, remoteSession)
+	tools, err := client.ListTools(ctx)
 	if err != nil {
 		return fmt.Errorf("list tools from Moda desktop client: %w", err)
 	}
@@ -37,7 +36,7 @@ func RunBridge(ctx context.Context, descriptor clientconn.Descriptor, agentTrans
 		registered[tool.Name] = struct{}{}
 		remoteTool := tool
 		bridge.AddTool(remoteTool, func(callContext context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return remoteSession.CallTool(callContext, &mcp.CallToolParams{
+			return client.session.CallTool(callContext, &mcp.CallToolParams{
 				Meta:      request.Params.Meta,
 				Name:      remoteTool.Name,
 				Arguments: request.Params.Arguments,
@@ -49,6 +48,41 @@ func RunBridge(ctx context.Context, descriptor clientconn.Descriptor, agentTrans
 		return fmt.Errorf("run client MCP bridge: %w", err)
 	}
 	return nil
+}
+
+type DesktopClient struct {
+	session   *mcp.ClientSession
+	closeHTTP func()
+}
+
+func ConnectDesktop(ctx context.Context, descriptor clientconn.Descriptor) (*DesktopClient, error) {
+	session, closeHTTP, err := connectDesktop(ctx, descriptor)
+	if err != nil {
+		return nil, err
+	}
+	return &DesktopClient{session: session, closeHTTP: closeHTTP}, nil
+}
+
+func (client *DesktopClient) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
+	tools, err := listAllTools(ctx, client.session)
+	if err != nil {
+		return nil, fmt.Errorf("list tools from Moda desktop client: %w", err)
+	}
+	return tools, nil
+}
+
+func (client *DesktopClient) CallTool(ctx context.Context, name string, arguments any) (*mcp.CallToolResult, error) {
+	result, err := client.session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: arguments})
+	if err != nil {
+		return nil, fmt.Errorf("call Moda desktop client tool %q: %w", name, err)
+	}
+	return result, nil
+}
+
+func (client *DesktopClient) Close() error {
+	err := client.session.Close()
+	client.closeHTTP()
+	return err
 }
 
 func connectDesktop(ctx context.Context, descriptor clientconn.Descriptor) (*mcp.ClientSession, func(), error) {
