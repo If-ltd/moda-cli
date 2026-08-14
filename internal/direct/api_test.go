@@ -163,6 +163,74 @@ func TestListOrganizationsRefreshesOnceOnBusinessTokenError(t *testing.T) {
 	}
 }
 
+func TestRequestCallsSelectedOrganizationAPI(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/store/page" || request.Method != http.MethodPost {
+			t.Errorf("request = %s %s", request.Method, request.URL.Path)
+		}
+		if request.Header.Get("Authorization") != "Bearer access-1" || request.Header.Get("Org-id") != "3" {
+			t.Errorf("authenticated headers = %#v", request.Header)
+		}
+		if got := request.URL.Query()["status"]; len(got) != 2 || got[0] != "active" || got[1] != "paused" {
+			t.Errorf("status query = %#v", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["page"] != float64(2) {
+			t.Errorf("request body = %#v", body)
+		}
+		writeAPIResponse(t, response, map[string]any{"records": []any{}})
+	}))
+	defer server.Close()
+
+	store := NewSessionStore(filepath.Join(t.TempDir(), "session.json"))
+	if err := store.Save(Session{
+		APIBaseURL: server.URL, AccessToken: "access-1", RefreshToken: "refresh-1",
+		ExpiresAt: time.Now().Add(time.Hour), OrgID: "3", UserID: "123",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := NewAPIClient(store, server.Client())
+	result, err := client.Request(context.Background(), APIRequest{
+		Method: http.MethodPost,
+		Path:   "/store/page",
+		Query:  map[string]any{"status": []any{"active", "paused"}},
+		Body:   map[string]any{"page": 2},
+	})
+	if err != nil {
+		t.Fatalf("Request() error = %v", err)
+	}
+	if records, ok := asRecord(result)["records"].([]any); !ok || len(records) != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestRequestRejectsMissingScopeAndExternalURL(t *testing.T) {
+	store := NewSessionStore(filepath.Join(t.TempDir(), "session.json"))
+	if err := store.Save(Session{
+		APIBaseURL: "https://api.moda.test", AccessToken: "access-1", RefreshToken: "refresh-1",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := NewAPIClient(store, nil)
+	if _, err := client.Request(context.Background(), APIRequest{Method: http.MethodGet, Path: "/store/page"}); err == nil || !strings.Contains(err.Error(), "organization") {
+		t.Fatalf("missing scope error = %v", err)
+	}
+
+	if err := store.Save(Session{
+		APIBaseURL: "https://api.moda.test", AccessToken: "access-1", RefreshToken: "refresh-1",
+		ExpiresAt: time.Now().Add(time.Hour), OrgID: "3", UserID: "123",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Request(context.Background(), APIRequest{Method: http.MethodGet, Path: "https://attacker.invalid/steal"}); err == nil || !strings.Contains(err.Error(), "relative") {
+		t.Fatalf("external URL error = %v", err)
+	}
+}
+
 func TestConcurrentRequestsShareOneRefresh(t *testing.T) {
 	var refreshCount atomic.Int64
 	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

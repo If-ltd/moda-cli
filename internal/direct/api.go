@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +19,13 @@ import (
 type Scope struct {
 	UserID string `json:"userId"`
 	OrgID  string `json:"orgId"`
+}
+
+type APIRequest struct {
+	Method string
+	Path   string
+	Query  map[string]any
+	Body   any
 }
 
 type APIClient struct {
@@ -98,6 +107,27 @@ func (client *APIClient) ListOrganizations(ctx context.Context) (any, error) {
 		return nil, err
 	}
 	return client.authenticatedRequest(ctx, session, "/user/tenant/list", http.MethodGet, nil, "", true)
+}
+
+func (client *APIClient) Request(ctx context.Context, request APIRequest) (any, error) {
+	session, err := client.ensureFreshSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if session.OrgID == "" || session.UserID == "" {
+		return nil, errors.New("select a Moda organization before using direct mode")
+	}
+	pathname, err := buildAPIPath(request.Path, request.Query)
+	if err != nil {
+		return nil, err
+	}
+	method := strings.ToUpper(strings.TrimSpace(request.Method))
+	switch method {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+	default:
+		return nil, fmt.Errorf("unsupported Moda API method %q", request.Method)
+	}
+	return client.authenticatedRequest(ctx, session, pathname, method, request.Body, session.OrgID, true)
 }
 
 func (client *APIClient) authenticatedRequest(
@@ -260,4 +290,40 @@ func parseExpiration(value any) time.Time {
 	}
 	parsed, _ := time.Parse(time.RFC3339Nano, text)
 	return parsed
+}
+
+func buildAPIPath(pathname string, query map[string]any) (string, error) {
+	pathname = strings.TrimSpace(pathname)
+	parsed, err := url.Parse(pathname)
+	if err != nil || !strings.HasPrefix(pathname, "/") || strings.HasPrefix(pathname, "//") ||
+		parsed.IsAbs() || parsed.Host != "" || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(parsed.Path, "..") {
+		return "", errors.New("Moda API path must be an absolute-path relative URL without query or fragment")
+	}
+	values := url.Values{}
+	for key, value := range query {
+		key = strings.TrimSpace(key)
+		if key == "" || value == nil {
+			continue
+		}
+		reflected := reflect.ValueOf(value)
+		if reflected.Kind() == reflect.Slice || reflected.Kind() == reflect.Array {
+			for index := 0; index < reflected.Len(); index++ {
+				appendQueryValue(values, key, reflected.Index(index).Interface())
+			}
+			continue
+		}
+		appendQueryValue(values, key, value)
+	}
+	parsed.RawQuery = values.Encode()
+	return parsed.String(), nil
+}
+
+func appendQueryValue(values url.Values, key string, value any) {
+	if value == nil {
+		return
+	}
+	text := fmt.Sprint(value)
+	if text != "" {
+		values.Add(key, text)
+	}
 }
