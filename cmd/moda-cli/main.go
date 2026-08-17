@@ -18,75 +18,68 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const usage = `moda-cli exposes Moda capabilities to agents through MCP.
-
-Usage:
-  moda-cli --help
-  moda-cli mcp [--mode client]
-  moda-cli tools [--mode client]
-  moda-cli call <tool-name> [--mode client] [--input JSON | --input-file FILE]
-
-Direct mode (not implemented; commands are reserved):
-  moda-cli mcp --mode direct
-  moda-cli tools --mode direct
-  moda-cli call <tool-name> --mode direct [--input JSON | --input-file FILE]
-  printf '%s' 'PASSWORD' | moda-cli auth login --api-base-url URL --account ACCOUNT --password-stdin
-  moda-cli auth orgs
-  moda-cli auth use-org <org-id>
-  moda-cli auth status
-  moda-cli auth logout
-
-Modes:
-  client  Bridge stdio MCP to the running signed-in Moda desktop client.
-  direct  Not implemented. The command surface is reserved for future public APIs.
-
-Environment:
-  MODA_CLIENT_MCP_CONNECTION_FILE  Override the Electron connection descriptor.
-  MODA_CLIENT_CLI_SESSION_FILE     Override the direct-mode session file.
-`
-
 func main() {
-	if len(os.Args) == 1 || (len(os.Args) == 2 && (os.Args[1] == "--help" || os.Args[1] == "-h")) {
-		_, _ = os.Stdout.WriteString(usage)
-		return
-	}
-
-	command, err := cli.Parse(os.Args[1:])
-	if err != nil {
-		exitWithError("invalid_arguments", err, 2)
-		return
-	}
-	if command.Name == "help" {
-		_, _ = os.Stdout.WriteString(usage)
-		return
-	}
-	if err := directModeAvailabilityError(command); err != nil {
-		exitWithError("not_implemented", err, 1)
-		return
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	root := cli.NewRoot(executeCommand)
+	root.SetOut(os.Stdout)
+	root.SetErr(os.Stderr)
+	if err := root.ExecuteContext(ctx); err != nil {
+		failure := &commandFailure{code: "invalid_arguments", status: 2, err: err}
+		var classified *commandFailure
+		if errors.As(err, &classified) {
+			failure = classified
+		}
+		exitWithError(failure.code, failure.err, failure.status)
+	}
+}
+
+type commandFailure struct {
+	code   string
+	status int
+	err    error
+}
+
+func (failure *commandFailure) Error() string {
+	return failure.err.Error()
+}
+
+func (failure *commandFailure) Unwrap() error {
+	return failure.err
+}
+
+func executeCommand(ctx context.Context, command cli.Command) error {
+	if err := directModeAvailabilityError(command); err != nil {
+		return &commandFailure{code: "not_implemented", status: 1, err: err}
+	}
 	if strings.HasPrefix(command.Name, "auth-") {
 		if err := runDirectAuth(ctx, command); err != nil {
-			exitWithError("moda_cli_failed", err, 1)
+			return &commandFailure{code: "moda_cli_failed", status: 1, err: err}
 		}
-		return
+		return nil
 	}
 	if command.Mode == "direct" {
 		if command.Name != "mcp" && command.Name != "tools" && command.Name != "call" {
-			exitWithError("invalid_arguments", fmt.Errorf("direct %s is not supported", command.Name), 2)
-			return
+			return &commandFailure{
+				code: "invalid_arguments", status: 2,
+				err: fmt.Errorf("direct %s is not supported", command.Name),
+			}
 		}
 		if err := runDirectCommand(ctx, command); err != nil {
-			exitWithError("moda_cli_failed", err, 1)
+			return &commandFailure{code: "moda_cli_failed", status: 1, err: err}
 		}
-		return
+		return nil
 	}
+	if err := runClientCommand(ctx, command); err != nil {
+		return &commandFailure{code: "moda_cli_failed", status: 1, err: err}
+	}
+	return nil
+}
 
+func runClientCommand(ctx context.Context, command cli.Command) error {
 	homeDirectory, err := os.UserHomeDir()
 	if err != nil {
-		exitWithError("moda_cli_failed", fmt.Errorf("resolve home directory: %w", err), 1)
-		return
+		return fmt.Errorf("resolve home directory: %w", err)
 	}
 	connectionFile, err := clientconn.ResolveFilePath(command.ConnectionFile, map[string]string{
 		"MODA_CLIENT_MCP_CONNECTION_FILE": os.Getenv("MODA_CLIENT_MCP_CONNECTION_FILE"),
@@ -94,14 +87,12 @@ func main() {
 		"XDG_CONFIG_HOME":                 os.Getenv("XDG_CONFIG_HOME"),
 	}, homeDirectory, runtime.GOOS)
 	if err != nil {
-		exitWithError("moda_cli_failed", err, 1)
-		return
+		return err
 	}
 	if command.Name == "tools" || command.Name == "call" {
 		client, err := clientmcp.ConnectDesktopFile(ctx, connectionFile)
 		if err != nil {
-			exitWithError("moda_cli_failed", err, 1)
-			return
+			return err
 		}
 		defer client.Close()
 		var output any
@@ -115,17 +106,14 @@ func main() {
 			output, err = client.CallTool(ctx, command.ToolName, arguments)
 		}
 		if err != nil {
-			exitWithError("moda_cli_failed", err, 1)
-			return
+			return err
 		}
 		if err := json.NewEncoder(os.Stdout).Encode(output); err != nil {
-			exitWithError("moda_cli_failed", fmt.Errorf("encode output: %w", err), 1)
+			return fmt.Errorf("encode output: %w", err)
 		}
-		return
+		return nil
 	}
-	if err := clientmcp.RunBridgeFile(ctx, connectionFile, &mcp.StdioTransport{}); err != nil {
-		exitWithError("moda_cli_failed", err, 1)
-	}
+	return clientmcp.RunBridgeFile(ctx, connectionFile, &mcp.StdioTransport{})
 }
 
 func directModeAvailabilityError(command cli.Command) error {

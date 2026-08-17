@@ -41,10 +41,22 @@ func TestHelpMarksDirectCommandsNotImplemented(t *testing.T) {
 		t.Fatalf("moda-cli --help failed: %v\n%s", err, output)
 	}
 	for _, expected := range []string{
-		"moda-cli tools", "moda-cli call", "moda-cli auth login", "moda-cli auth use-org", "Direct mode (not implemented",
+		"Available Commands:", "Manage direct-mode authentication (not implemented)",
+		"Call one Moda MCP tool", "List Moda MCP tools",
 	} {
 		if !strings.Contains(string(output), expected) {
 			t.Fatalf("help output does not contain %q:\n%s", expected, output)
+		}
+	}
+
+	authHelp := exec.Command("go", "run", "./cmd/moda-cli", "auth", "--help")
+	authOutput, err := authHelp.CombinedOutput()
+	if err != nil {
+		t.Fatalf("moda-cli auth --help failed: %v\n%s", err, authOutput)
+	}
+	for _, expected := range []string{"login", "orgs", "use-org", "status", "logout", "not implemented"} {
+		if !strings.Contains(string(authOutput), expected) {
+			t.Fatalf("auth help output does not contain %q:\n%s", expected, authOutput)
 		}
 	}
 }
