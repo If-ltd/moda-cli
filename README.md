@@ -7,7 +7,7 @@ The project is intentionally independent from the private Moda application repos
 ## Modes
 
 - `client`: discover a running Moda Electron client and proxy its current authenticated MCP capabilities, including client-side tools such as 3D design. This mode is implemented in this repository and requires an Electron build that publishes the v1 descriptor below.
-- `direct`: maintain an independent Moda login session and connect to a public remote Moda MCP endpoint. Direct mode has no Electron-only capabilities.
+- `direct`: **not implemented**. Its command names are reserved, but every direct/auth entry point currently fails explicitly without reading credentials, creating a session, or making a network request.
 
 ## Client mode
 
@@ -71,37 +71,19 @@ The Electron publisher and Go reader share these protocol requirements:
 3. Refresh the descriptor before expiry and keep Unix mode `0600` (or a current-user-only Windows ACL). A publication failure must leave the previous descriptor and token usable until their declared expiry.
 4. Keep the endpoint at `/agent-runtime/v1/mcp/client`, loopback-only HTTPS, POST-compatible Streamable HTTP, and require `Authorization: Bearer <localAccessToken>`. Descriptor tokens must not authorize any other Agent Runtime path.
 5. Continue deriving tools and calls from the existing Electron capability gateway and renderer implementations. Do not add a second 3D implementation or a Go-side business tool catalog.
-6. Remove the transitional TypeScript `packages/client-cli` only after direct mode has a separately agreed architecture and both modes have reached capability parity.
+6. Keep the Electron publisher contract independent from the removed transitional TypeScript `packages/client-cli` and from the future direct-mode architecture.
 
-## Direct mode
+## Direct mode (not implemented)
 
-Direct mode owns its login, refresh token, and organization selection. The Agent invoking `moda-cli` never receives or manages those credentials.
+Direct mode is not currently available. The CLI reserves `--mode direct` and the `auth` command group, but invoking any of them returns a `not_implemented` error. There is no fallback to client mode.
 
 ```sh
-printf '%s' "$MODA_PASSWORD" | moda-cli auth login \
-  --api-base-url https://api.example.com \
-  --account <account> \
-  --password-stdin
-moda-cli auth orgs
-moda-cli auth use-org <org-id>
-moda-cli auth status
 moda-cli tools --mode direct
-moda-cli call <tool-name> --mode direct --input '{}'
-moda-cli mcp --mode direct
-moda-cli auth logout
 ```
 
-The session is stored with Unix mode `0600` at the following locations. `--session-file` and `MODA_CLIENT_CLI_SESSION_FILE` override the path.
+The implementation experiments under `internal/direct` are intentionally retained and continue to compile and run their tests, but they are not a supported backend contract. In particular, the prototype `mcpEndpoint` login field is not available from the current Moda backend and must not be treated as deployed functionality.
 
-- macOS: `~/Library/Application Support/Moda/client-cli/session.json`
-- Windows: `%APPDATA%\Moda\client-cli\session.json`
-- Linux: `${XDG_CONFIG_HOME:-~/.config}/Moda/client-cli/session.json`
-
-The password is accepted only from stdin and is never persisted. Access tokens are refreshed within one minute of expiry and once after HTTP 401/403 or Moda business code `133002`. Concurrent requests share one refresh operation.
-
-Direct mode does not embed or reproduce the private Moda action catalog. The login response must provide an absolute `data.mcpEndpoint` alongside `accessToken`, `refreshToken`, and `expireTime`. `moda-cli` connects to that standard Streamable HTTP MCP endpoint with `Authorization: Bearer <accessToken>` and the selected `Org-id`. Missing endpoints, redirects, unsupported URL schemes, and missing organization scope are explicit errors.
-
-The remote MCP service owns the public backend-only tool catalog and must not expose Electron/renderer tools or Agent Run-only orchestration actions.
+The intended direct mode is Electron-independent: `moda-cli` will own authentication, token refresh, and organization selection, then call versioned public Open Platform APIs directly. Agent capabilities must come only from explicitly published public operations; the implementation must not copy the private Agent Server catalog, expose arbitrary backend APIs, or include Electron-only tools such as Studio 3D design. This architecture must be agreed with the backend before the entry point is enabled.
 
 ## Development
 

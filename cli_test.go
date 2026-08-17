@@ -34,14 +34,14 @@ func TestCommandFailureIsStructuredJSON(t *testing.T) {
 	}
 }
 
-func TestHelpPublishesClientAndDirectCommands(t *testing.T) {
+func TestHelpMarksDirectCommandsNotImplemented(t *testing.T) {
 	command := exec.Command("go", "run", "./cmd/moda-cli", "--help")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("moda-cli --help failed: %v\n%s", err, output)
 	}
 	for _, expected := range []string{
-		"moda-cli tools", "moda-cli call", "moda-cli auth login", "moda-cli auth use-org",
+		"moda-cli tools", "moda-cli call", "moda-cli auth login", "moda-cli auth use-org", "Direct mode (not implemented",
 	} {
 		if !strings.Contains(string(output), expected) {
 			t.Fatalf("help output does not contain %q:\n%s", expected, output)

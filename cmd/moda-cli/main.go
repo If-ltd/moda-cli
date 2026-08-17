@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,9 +22,14 @@ const usage = `moda-cli exposes Moda capabilities to agents through MCP.
 
 Usage:
   moda-cli --help
-  moda-cli mcp [--mode client|direct]
-  moda-cli tools [--mode client|direct]
-  moda-cli call <tool-name> [--mode client|direct] [--input JSON | --input-file FILE]
+  moda-cli mcp [--mode client]
+  moda-cli tools [--mode client]
+  moda-cli call <tool-name> [--mode client] [--input JSON | --input-file FILE]
+
+Direct mode (not implemented; commands are reserved):
+  moda-cli mcp --mode direct
+  moda-cli tools --mode direct
+  moda-cli call <tool-name> --mode direct [--input JSON | --input-file FILE]
   printf '%s' 'PASSWORD' | moda-cli auth login --api-base-url URL --account ACCOUNT --password-stdin
   moda-cli auth orgs
   moda-cli auth use-org <org-id>
@@ -32,7 +38,7 @@ Usage:
 
 Modes:
   client  Bridge stdio MCP to the running signed-in Moda desktop client.
-  direct  Use an independent login session with the public Moda MCP endpoint.
+  direct  Not implemented. The command surface is reserved for future public APIs.
 
 Environment:
   MODA_CLIENT_MCP_CONNECTION_FILE  Override the Electron connection descriptor.
@@ -52,6 +58,10 @@ func main() {
 	}
 	if command.Name == "help" {
 		_, _ = os.Stdout.WriteString(usage)
+		return
+	}
+	if err := directModeAvailabilityError(command); err != nil {
+		exitWithError("not_implemented", err, 1)
 		return
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -116,6 +126,13 @@ func main() {
 	if err := clientmcp.RunBridgeFile(ctx, connectionFile, &mcp.StdioTransport{}); err != nil {
 		exitWithError("moda_cli_failed", err, 1)
 	}
+}
+
+func directModeAvailabilityError(command cli.Command) error {
+	if command.Mode == "direct" || strings.HasPrefix(command.Name, "auth-") {
+		return errors.New("direct mode is not implemented; use client mode with a running Moda desktop client")
+	}
+	return nil
 }
 
 func exitWithError(code string, err error, status int) {
